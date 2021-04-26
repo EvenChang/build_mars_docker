@@ -1,0 +1,81 @@
+# First stage is the build environment
+FROM nosignal/mars-builder:0.0.1 as builder
+MAINTAINER Howard Hsu <howard_hsu@edge-core.com>
+LABEL stage=mars-builder
+
+# Set the environment variables
+ENV HOME /root
+ENV BUILD_NUMBER docker
+ENV JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF8
+
+# Copy in the source
+COPY ./buck-out/gen/tools/package/onos-package/onos.tar.gz /src/onos/
+
+# Copy files to binary dir
+WORKDIR /src/tar
+COPY ./run.sh ./provision.sh ./apps/nocsys/dhcpv6/dhcpv6_agent.py ./apps/nocsys/dhcpv6/dhcpv6.conf ./
+COPY ./switch/init/* ./switch/init/
+COPY ./packages/filebeat.yml /etc/filebeat/filebeat.yml
+
+# Build ONOS
+# We extract the tar in the build environment to avoid having to put the tar
+# in the runtime environment - this saves a lot of space
+# FIXME - dependence on ONOS_ROOT and git at build time is a hack to work around
+# build problems
+WORKDIR /src/onos
+RUN export ONOS_ROOT=/src/onos && \
+        cd /src/tar && \
+        tar -xf /src/onos/onos.tar.gz --strip-components=1
+
+# Second stage is the runtime environment
+FROM nosignal/mars-based:0.0.1
+
+RUN apt-get update && apt-get install -y shellinabox openssh-client
+# some old switch ssh server algorithm is old, now ssh client is not supported by default
+RUN echo "Ciphers 3des-cbc,blowfish-cbc,aes128-cbc,aes128-ctr,aes256-ctr\nMACs hmac-md5,hmac-sha1,umac-64@openssh.com,hmac-ripemd160\nKexAlgorithms diffie-hellman-group1-sha1,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group-exchange-sha256,diffie-hellman-group14-sha1\nHostkeyAlgorithms ssh-dss,ssh-rsa,rsa-sha2-512,rsa-sha2-256,ecdsa-sha2-nistp256,ssh-ed25519\n" >> /etc/ssh/ssh_config
+
+COPY ./packages/filebeat.yml /etc/filebeat/filebeat.yml
+
+RUN chmod go-w /etc/filebeat/filebeat.yml
+
+RUN mkdir -p /root/onos
+
+WORKDIR /root/onos
+
+# Install ONOS
+COPY --from=builder /src/tar/ .
+
+ENV ONOS_APPS=drivers,openflow,fwd,proxyarp,restsb,snmp,linkdiscovery\
+,com.nocsys.drivers.nocsys.rest\
+,com.nocsys.drivers.nocsys.snmp\
+,com.nocsys.eventclient\
+,com.nocsys.utility\
+,com.nocsys.dhcpserver\
+,com.nocsys.dhcpv6server\
+,com.nocsys.useraccount\
+,com.nocsys.defaultcfg\
+,org.onosproject.cpman\
+,com.nocsys.healthycheck\
+,com.nocsys.alert\
+,com.nocsys.qos\
+,com.nocsys.analyzer\
+,com.nocsys.switchmgmt
+
+LABEL org.label-schema.name="MARS" \
+      org.label-schema.description="SDN Controller" \
+      org.label-schema.usage="http://wiki.onosproject.org" \
+      org.label-schema.url="http://www.nocsys.cn" \
+      org.label-scheme.vendor="Nocsys" \
+      org.label-schema.schema-version="1.0"
+
+# Ports
+# 6653 - OpenFlow
+# 6640 - OVSDB
+# 8181 - GUI
+# 8101 - ONOS CLI
+# 9876 - ONOS intra-cluster communication
+
+EXPOSE 6653 6640 8181 8101 9876 67/udp 68/udp
+
+# Get ready to run command
+ENTRYPOINT ["/root/onos/run.sh"]
